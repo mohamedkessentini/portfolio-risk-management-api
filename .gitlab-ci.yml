@@ -1,0 +1,117 @@
+# GitLab CI/CD pipeline for portfolio-risk-management-api
+#
+# Stages: build -> test -> package -> docker-build -> (docker-push, deploy are manual/optional
+# since they require a container registry / Kubernetes cluster that GitLab.com's free tier
+# shared runners don't provide out of the box).
+#
+# Requires: a GitLab project with CI/CD enabled and shared runners (or your own runner with
+# Docker executor for the docker-build job).
+
+stages:
+  - build
+  - test
+  - package
+  - docker-build
+  - docker-push
+  - deploy
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  MAVEN_CLI_OPTS: "--batch-mode --errors --fail-at-end -DskipTests"
+  POSTGRES_DB: portfolio_test
+  POSTGRES_USER: test
+  POSTGRES_PASSWORD: test
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG-maven"
+  paths:
+    - .m2/repository
+
+build:
+  stage: build
+  image: maven:3.9.9-eclipse-temurin-21
+  script:
+    - mvn $MAVEN_CLI_OPTS compile
+  artifacts:
+    paths:
+      - target/classes
+    expire_in: 1 hour
+
+unit-test:
+  stage: test
+  image: maven:3.9.9-eclipse-temurin-21
+  script:
+    - mvn --batch-mode --errors -Dtest='!*IntegrationTest' test
+  artifacts:
+    when: always
+    reports:
+      junit: target/surefire-reports/TEST-*.xml
+    paths:
+      - target/surefire-reports
+    expire_in: 1 week
+
+integration-test:
+  stage: test
+  image: maven:3.9.9-eclipse-temurin-21
+  services:
+    - name: docker:24-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    TESTCONTAINERS_RYUK_DISABLED: "true"
+  script:
+    - mvn --batch-mode --errors -Dtest='*IntegrationTest' test
+  artifacts:
+    when: always
+    reports:
+      junit: target/surefire-reports/TEST-*.xml
+    expire_in: 1 week
+  allow_failure: true # shared runners may not support DinD; documented for self-hosted runners
+
+package:
+  stage: package
+  image: maven:3.9.9-eclipse-temurin-21
+  script:
+    - mvn --batch-mode --errors -DskipTests package
+  artifacts:
+    paths:
+      - target/portfolio-risk-management-api.jar
+    expire_in: 1 week
+
+docker-build:
+  stage: docker-build
+  image: docker:24
+  services:
+    - docker:24-dind
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA -t $CI_REGISTRY_IMAGE:latest .
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+docker-push:
+  stage: docker-push
+  image: docker:24
+  services:
+    - docker:24-dind
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA -t $CI_REGISTRY_IMAGE:latest .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+  # Uses GitLab's built-in Container Registry ($CI_REGISTRY_IMAGE) - enable it in
+  # Settings > Packages and registries on your GitLab project.
+
+deploy-k8s:
+  stage: deploy
+  image: bitnami/kubectl:1.30
+  script:
+    - kubectl apply -f k8s/
+    - kubectl set image deployment/portfolio-api api=$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+  # Requires a KUBECONFIG CI/CD variable pointing at your target cluster.
