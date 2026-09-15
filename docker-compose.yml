@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: portfolio-db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-portfolio_db}
+      POSTGRES_USER: ${DB_USERNAME:-portfolio_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-portfolio_pass}
+    ports:
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - portfolio-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-portfolio_user} -d ${DB_NAME:-portfolio_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    container_name: portfolio-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_USERNAME: ${DB_USERNAME:-portfolio_user}
+      DB_PASSWORD: ${DB_PASSWORD:-portfolio_pass}
+    ports:
+      - "${API_PORT:-8081}:8080"
+
+volumes:
+  portfolio-db-data:
