@@ -1,0 +1,8 @@
+spring:
+  jpa:
+    show-sql: true
+
+logging:
+  level:
+    com.kossentini.portfolio: DEBUG
+    org.hibernate.SQL: DEBUG
